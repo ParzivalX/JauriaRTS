@@ -1,3 +1,4 @@
+-- $Id: cawidgets.lua 4261 2009-03-31 16:34:36Z licho $
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 --
@@ -27,6 +28,13 @@ function includeZIPFirst(filename, envTable)
   return VFS.Include(LUAUI_DIRNAME .. filename, envTable, VFS.ZIP_FIRST)
 end
 
+WG = {}
+Spring.Utilities = {}
+VFS.Include("LuaRules/Utilities/tablefunctions.lua")
+VFS.Include("LuaRules/Utilities/versionCompare.lua")
+local reverseCompat = not Spring.Utilities.IsCurrentVersionNewerThan(100, 0)
+
+VFS.Include("LuaRules/Utilities/function_override.lua")
 
 include("keysym.h.lua")
 include("utils.lua")
@@ -45,6 +53,16 @@ local WIDGET_DIRNAME     = LUAUI_DIRNAME .. 'Widgets/'
 local HANDLER_BASENAME = "jauriawidgets.lua"
 local SELECTOR_BASENAME = 'selector.lua'
 
+do
+	local isMission = Game.modDesc:find("Mission Mutator")
+	if isMission then -- all missions will be forced to use a specific name
+		if not VFS.FileExists(ORDER_FILENAME) or not VFS.FileExists(CONFIG_FILENAME) then
+			ORDER_FILENAME     = LUAUI_DIRNAME .. 'Config/jauria_order.lua' --use "ZK" name when running any mission mod (provided that there's no existing config file)
+			CONFIG_FILENAME    = LUAUI_DIRNAME .. 'Config/jauria_data.lua'
+		end
+	end
+end
+
 local SAFEWRAP = 1
 -- 0: disabled
 -- 1: enabled, but can be overriden by widget.GetInfo().unsafe
@@ -55,6 +73,14 @@ local glPopAttrib  = gl.PopAttrib
 local glPushAttrib = gl.PushAttrib
 local pairs = pairs
 local ipairs = ipairs
+
+do -- create backup for ZK_data.lua and ZK_order.lua to workaround against case of file corruption when OS crash
+ 	local fileToCheck = {ORDER_FILENAME,CONFIG_FILENAME}
+	local extraText = {'-- Widget Order List  (0 disables a widget)', '-- Widget Custom Data'} --this is a header text that is appended to start of file
+	for i=1, #fileToCheck do
+		CheckLUAFileAndBackup(fileToCheck[i], extraText[i]) --utility_two.lua
+	end
+end
 
 -- read local widgets config
 local localWidgetsFirst = false
@@ -73,7 +99,7 @@ VFSMODE = localWidgetsFirst and VFS.RAW_FIRST
 VFSMODE = VFSMODE or localWidgets and VFS.ZIP_FIRST
 VFSMODE = VFSMODE or VFS.ZIP
 
-local detailLevel = 2 -- Spring.GetConfigInt("widgetDetailLevel", 3)
+local detailLevel = Spring.GetConfigInt("widgetDetailLevel", 3)
 
 --------------------------------------------------------------------------------
 
@@ -114,7 +140,7 @@ widgetHandler = {
 
   actionHandler = include("actions.lua"),
   
-  WG = {}, -- shared table for widgets
+  WG = WG, -- shared table for widgets
 
   globals = {}, -- global vars/funcs
 
@@ -123,7 +149,6 @@ widgetHandler = {
   
   tweakMode = false,
 }
-
 
 -- these call-ins are set to 'nil' if not used
 -- they are setup in UpdateCallIns()
@@ -143,8 +168,10 @@ local flexCallIns = {
   'DefaultCommand',
   'UnitCreated',
   'UnitFinished',
+  'UnitReverseBuilt',
   'UnitFromFactory',
   'UnitDestroyed',
+  'UnitDestroyedByTeam',
   'UnitExperience',
   'UnitTaken',
   'UnitGiven',
@@ -152,6 +179,7 @@ local flexCallIns = {
   'UnitCommand',
   'UnitCmdDone',
   'UnitDamaged',
+  'UnitStunned',
   'UnitEnteredRadar',
   'UnitEnteredLos',
   'UnitLeftRadar',
@@ -199,6 +227,7 @@ local callInLists = {
   'DrawScreen',
   'KeyPress',
   'KeyRelease',
+  'TextInput',
   'MousePress',
   'MouseWheel',
   'JoyAxis',
@@ -284,11 +313,11 @@ function widgetHandler:LoadOrderList()
 		self.orderList = {}
 		self.orderList.version = ORDER_VERSION
 	end 
-	local detailLevel = 2 -- Spring.GetConfigInt("widgetDetailLevel", 2)
-	--if (self.orderList.lastWidgetDetailLevel ~= detailLevel) then
-	--	resetWidgetDetailLevel = true
-	--	self.orderList.lastWidgetDetailLevel = detailLevel
-	--end 
+	local detailLevel = Spring.GetConfigInt("widgetDetailLevel", 2)
+	if (self.orderList.lastWidgetDetailLevel ~= detailLevel) then
+		resetWidgetDetailLevel = true
+		self.orderList.lastWidgetDetailLevel = detailLevel
+	end 
   end
 end
 
@@ -512,15 +541,15 @@ function widgetHandler:LoadWidget(filename, _VFSMODE)
     enabled = false
   end
 
-  --if resetWidgetDetailLevel and info.detailsDefault ~= nil then
-  --  if type(info.detailsDefault) == "table" then
-  --    enabled = info.detailsDefault[detailLevel] and true
-  --  elseif type(info.detailsDefault) == "number" then
-  --    enabled = detailLevel >= info.detailsDefault
-  --  elseif tonumber(info.detailsDefault) then
-  --    enabled = detailLevel >= tonumber(info.detailsDefault)
-  --  end
-  --end
+  if resetWidgetDetailLevel and info.detailsDefault ~= nil then
+	if type(info.detailsDefault) == "table" then
+		enabled = info.detailsDefault[detailLevel] and true
+	elseif type(info.detailsDefault) == "number" then
+		enabled = detailLevel >= info.detailsDefault
+	elseif tonumber(info.detailsDefault) then
+		enabled = detailLevel >= tonumber(info.detailsDefault)
+	end
+  end
 			 
   if (enabled) then
 	-- this will be an active widget
@@ -1218,8 +1247,8 @@ function widgetHandler:CommandNotify(id, params, options)
   return false
 end
 
-local MUTE_SPECTATORS = Spring.GetModOptions().mutespec
-local MUTE_LOBBY = Spring.GetModOptions().mutelobby
+local MUTE_SPECTATORS = Spring.GetModOptions().mutespec or 'autodetect'
+local MUTE_LOBBY = Spring.GetModOptions().mutelobby or 'autodetect'
 local playerNameToID 
 
 do
@@ -1306,7 +1335,7 @@ function widgetHandler:AddConsoleLine(msg, priority)
 		end
 		local playerID_msg = newMsg.player and newMsg.player.id --retrieve playerID from message.
 		local customkeys = select(10, Spring.GetPlayerInfo(playerID_msg))
-		if customkeys and customkeys.muted then
+		if customkeys and (customkeys.muted or (newMsg.msgtype == 'spec_to_everyone' and ((customkeys.can_spec_chat or '1') == '0'))) then
 			local myPlayerID = Spring.GetLocalPlayerID()
 			if myPlayerID == playerID_msg then --if I am the muted, then:
 				newMsg.argument = "<your message was blocked by mute>"	--remind myself that I am muted.		
@@ -1522,6 +1551,19 @@ function widgetHandler:KeyRelease(key, mods, label, unicode)
 
   for _,w in ipairs(self.KeyReleaseList) do
     if (w:KeyRelease(key, mods, label, unicode)) then
+      return true
+    end
+  end
+  return false
+end
+
+function widgetHandler:TextInput(utf8, ...)
+  if (self.tweakMode) then
+    return true
+  end
+
+  for _,w in ipairs(self.TextInputList) do
+    if (w:TextInput(utf8, ...)) then
       return true
     end
   end
@@ -1757,12 +1799,13 @@ function widgetHandler:GameStart()
 			end	
 		end
 	end
+	Spring.SendCommands("wbynum 255 SPRINGIE:stats,plist".. plist)
   return
 end
 
-function widgetHandler:GameOver()
+function widgetHandler:GameOver(winners)
   for _,w in ipairs(self.GameOverList) do
-    w:GameOver()
+    w:GameOver(winners)
   end
   return
 end
@@ -1913,6 +1956,12 @@ function widgetHandler:UnitFinished(unitID, unitDefID, unitTeam)
   return
 end
 
+function widgetHandler:UnitReverseBuilt(unitID, unitDefID, unitTeam)
+  for _,w in ipairs(self.UnitReverseBuiltList) do
+    w:UnitReverseBuilt(unitID, unitDefID, unitTeam)
+  end
+  return
+end
 
 function widgetHandler:UnitFromFactory(unitID, unitDefID, unitTeam,
                                        factID, factDefID, userOrders)
@@ -1924,9 +1973,18 @@ function widgetHandler:UnitFromFactory(unitID, unitDefID, unitTeam,
 end
 
 
-function widgetHandler:UnitDestroyed(unitID, unitDefID, unitTeam)
+function widgetHandler:UnitDestroyed(unitID, unitDefID, unitTeam, pre)
+  if pre == false then return end
   for _,w in ipairs(self.UnitDestroyedList) do
     w:UnitDestroyed(unitID, unitDefID, unitTeam)
+  end
+  return
+end
+
+
+function widgetHandler:UnitDestroyedByTeam(unitID, unitDefID, unitTeam, attTeamID)
+  for _,w in ipairs(self.UnitDestroyedByTeamList) do
+    w:UnitDestroyedByTeam(unitID, unitDefID, unitTeam, attTeamID)
   end
   return
 end
@@ -1967,18 +2025,24 @@ end
 
 
 function widgetHandler:UnitCommand(unitID, unitDefID, unitTeam,
-                                   cmdId, cmdOpts, cmdParams,cmdTag) --cmdTag available in Spring 95
+                                   cmdId, cmdParams, cmdOpts, cmdTag) --cmdTag available in Spring 95
+  if reverseCompat then
+    cmdOpts, cmdParams = cmdParams, cmdOpts
+  end
   for _,w in ipairs(self.UnitCommandList) do
     w:UnitCommand(unitID, unitDefID, unitTeam,
-                  cmdId, cmdOpts, cmdParams,cmdTag)
+                  cmdId, cmdParams, cmdOpts, cmdTag)
   end
   return
 end
 
 
-function widgetHandler:UnitCmdDone(unitID, unitDefID, unitTeam, cmdID, cmdTag, cmdParams, cmdOptions) --cmdParams & cmdOptions available in Spring 95
+function widgetHandler:UnitCmdDone(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag) --cmdParams & cmdOptions available in Spring 95
+  if reverseCompat then
+    cmdOptions, cmdParams = cmdParams, cmdOptions
+  end
   for _,w in ipairs(self.UnitCmdDoneList) do
-    w:UnitCmdDone(unitID, unitDefID, unitTeam, cmdID, cmdTag, cmdParams, cmdOptions)
+    w:UnitCmdDone(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOptions, cmdTag)
   end
   return
 end
@@ -1988,6 +2052,13 @@ function widgetHandler:UnitDamaged(unitID, unitDefID, unitTeam,
                                    damage, paralyzer)
   for _,w in ipairs(self.UnitDamagedList) do
     w:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer)
+  end
+  return
+end
+
+function widgetHandler:UnitStunned(unitID, unitDefID, unitTeam, stunned)
+  for _,w in ipairs(self.UnitStunnedList) do
+    w:UnitStunned(unitID, unitDefID, unitTeam, stunned)
   end
   return
 end
@@ -2184,4 +2255,4 @@ end
 widgetHandler:Initialize()
 
 --------------------------------------------------------------------------------
---------------------------------------------------------------------------------
+----------------------------------------------------------

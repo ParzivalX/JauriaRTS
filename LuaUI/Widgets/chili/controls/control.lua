@@ -94,6 +94,7 @@ function Control:New(obj)
     obj._hasCustomDrawControl = true
   end
 
+
   --// load the skin for this control
   obj.classname = self.classname
   theme.LoadThemeDefaults(obj)
@@ -1444,6 +1445,23 @@ function Control:MouseMove(x, y, dx, dy, ...)
       end
     end
 
+	-- fixes resizing components that have a right or bottom bound
+	if self._relativeBounds.right ~= nil and type(self._relativeBounds.right) == "number" then
+	  local deltaW = w - self.width
+	  self._relativeBounds.right = self._relativeBounds.right - deltaW
+	  if self._relativeBounds.right < 0 then
+	    w = w + self._relativeBounds.right
+	    self._relativeBounds.right = 0
+      end
+    end
+	if self._relativeBounds.bottom ~= nil and type(self._relativeBounds.bottom) == "number" then
+	  local deltaH = h - self.height
+	  self._relativeBounds.bottom = self._relativeBounds.bottom - deltaH
+	  if self._relativeBounds.bottom < 0 then
+	    h = h + self._relativeBounds.bottom
+	    self._relativeBounds.bottom = 0
+      end
+    end
     self:SetPos(nil,nil,w,h)
     return self
   end
